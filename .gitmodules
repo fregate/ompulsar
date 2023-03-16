@@ -1,0 +1,3 @@
+[submodule "thirdparty/parties/pulsar-client"]
+	path = thirdparty/parties/pulsar-client
+	url = https://github.com/apache/pulsar-client-cpp.git
