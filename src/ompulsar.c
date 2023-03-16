@@ -6,12 +6,13 @@
 #include <module-template.h>
 #include <typedefs.h>
 
+#include <hashmap.h>
+
 #include <pulsar/c/client.h>
 #include <pulsar/c/message.h>
 #include <pulsar/c/producer.h>
 
 #include "defines.h"
-#include "hashmap.h"
 
 MODULE_TYPE_OUTPUT
 MODULE_TYPE_NOKEEP

@@ -1,3 +1,6 @@
 [submodule "thirdparty/parties/pulsar-client"]
 	path = thirdparty/parties/pulsar-client
 	url = https://github.com/apache/pulsar-client-cpp.git
+[submodule "thirdparty/parties/hashmap.c"]
+	path = thirdparty/parties/hashmap.c
+	url = https://github.com/tidwall/hashmap.c.git

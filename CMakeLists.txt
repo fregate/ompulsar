@@ -28,12 +28,10 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(FASTJSON REQUIRED libfastjson)
 
 # ---- Build Pulsar C++ Client -----
-find_package(thirdparty COMPONENTS pulsar-client)
+find_package(thirdparty COMPONENTS hashmap pulsar-client)
 
 add_library(ompulsar SHARED
 	src/defines.h
-	src/hashmap.c
-	src/hashmap.h
 	src/ompulsar.c
 )
 
@@ -56,6 +54,7 @@ PRIVATE
 target_link_libraries(ompulsar
 PRIVATE
 	rsyslog
+	thrdpartyHashMap
 	thirdparty::PulsarClient
 	${FASTJSON_LIBRARIES}
 )

@@ -3,7 +3,7 @@ get_filename_component(THIRDPARTY_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 
 set(_components
 	fmt
-	libbert
+	hashmap
 	pulsar-client
 )
 
