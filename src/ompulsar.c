@@ -72,7 +72,7 @@ void producer_tuple_free(void * item)
 
 typedef struct InstanceData_
 {
-	char * topic_;  // do not free it! it'll be freed at module destruction
+	char * template_;  // todo is it necessary field?
 	pulsar_producer_t * producer_;  // do not free it! it'll be freed at module destruction
 } instanceData;
 
@@ -104,6 +104,7 @@ struct modConfData_s
 	pulsar_client_t * client_;
 	pulsar_client_configuration_t * client_config_;
 
+	pthread_mutex_t prod_mutex_;
 	struct hashmap * producers_;
 };
 static modConfData_t * loadModConf = NULL; /* modConf ptr to use for the current load process */
@@ -143,6 +144,7 @@ const char PARAM_PRODUCER_BATCHING_MAX_MESSAGES[] = "batching.max.messages";
 const char PARAM_PRODUCER_BATCHING_MAX_SIZE[] = "batching.max.allowed.size";
 const char PARAM_PRODUCER_BATCHING_MAX_DELAY[] = "batching.max.publish.delay";
 const char PARAM_PRODUCER_CHUNKING[] = "chunking";
+const char PARAM_TEMPLATE[] = "template";
 
 /* tables for interfacing with the v6 config system */
 /* action (instance) parameters */
@@ -162,6 +164,8 @@ static struct cnfparamdescr actpdescr[] = {
 	{PARAM_PRODUCER_BATCHING_MAX_SIZE, eCmdHdlrPositiveInt, 0},
 	{PARAM_PRODUCER_BATCHING_MAX_DELAY, eCmdHdlrPositiveInt, 0},
 	{PARAM_PRODUCER_CHUNKING, eCmdHdlrNonNegInt, 0},  // bool
+
+	{PARAM_TEMPLATE, eCmdHdlrString, 0},  // string
 };
 static struct cnfparamblk actpblk = {CNFPARAMBLK_VERSION, sizeof(actpdescr) / sizeof(struct cnfparamdescr), actpdescr};
 
@@ -173,16 +177,12 @@ rsRetVal createInstance(instanceData ** data)
 		return RS_RET_OUT_OF_MEMORY;
 	}
 
+	instance_data->template_ = NULL;
+	instance_data->producer_ = NULL;
+
 	*data = instance_data;
 	return RS_RET_OK;
 }
-
-rsRetVal initConfVars()
-{
-	return RS_RET_OK;
-}
-
-EXPORT_FUNC rsRetVal resetConfigVariables(uchar ATTR_UNUSED * pp, void ATTR_UNUSED * pVal);
 
 // finishing plugin
 EXPORT_FUNC rsRetVal doHUP(instanceData *)
@@ -211,6 +211,7 @@ EXPORT_FUNC rsRetVal isCompatibleWithFeature(syslogFeature efeat)
 EXPORT_FUNC rsRetVal freeInstance(void * module_data)
 {
 	instanceData * data = (instanceData *)module_data;
+	free(data->template_);
 	free(data);
 	return RS_RET_OK;
 }
@@ -229,7 +230,6 @@ EXPORT_FUNC rsRetVal tryResume(wrkrInstanceData_t ATTR_UNUSED * worker_data)
 
 EXPORT_FUNC rsRetVal doAction(void * msg_data, wrkrInstanceData_t * worker_data)
 {
-	dbgprintf(">>> doAction\n");
 	uchar ** strings = (uchar **)msg_data;
 
 	pulsar_message_t * const pulsar_message = pulsar_message_create();
@@ -274,37 +274,41 @@ EXPORT_FUNC rsRetVal newActInst(uchar ATTR_UNUSED * modName,
 			continue;
 		}
 
-		if (!strcmp(actpblk.descr[i].name, PARAM_PRODUCER_TOPIC)) {
+		if (strcmp(actpblk.descr[i].name, PARAM_PRODUCER_TOPIC) == 0) {
 			topic = es_str2cstr(pvals[i].val.d.estr, NULL);
+			pthread_mutex_lock(&loadModConf->prod_mutex_);
 			p = hashmap_get(loadModConf->producers_, &(struct producer_tuple){.topic_ = topic});
-		} else if (!strcmp(actpblk.descr[i].name, PARAM_PRODUCER_SEND_TIMEOUT)) {
+			pthread_mutex_unlock(&loadModConf->prod_mutex_);
+		} else if (strcmp(actpblk.descr[i].name, PARAM_TEMPLATE) == 0) {
+			instance_data->template_ = es_str2cstr(pvals[i].val.d.estr, NULL);
+		} else if (strcmp(actpblk.descr[i].name, PARAM_PRODUCER_SEND_TIMEOUT) == 0) {
 			pulsar_producer_configuration_set_send_timeout(conf, (int)pvals[i].val.d.n);
-		} else if (!strcmp(actpblk.descr[i].name, PARAM_PRODUCER_INITIAL_SEQUENCE)) {
+		} else if (strcmp(actpblk.descr[i].name, PARAM_PRODUCER_INITIAL_SEQUENCE) == 0) {
 			pulsar_producer_configuration_set_initial_sequence_id(conf, (int64_t)pvals[i].val.d.n);
-		} else if (!strcmp(actpblk.descr[i].name, PARAM_PRODUCER_COMPRESSION)) {
+		} else if (strcmp(actpblk.descr[i].name, PARAM_PRODUCER_COMPRESSION) == 0) {
 			pulsar_producer_configuration_set_initial_sequence_id(conf, (pulsar_compression_type)pvals[i].val.d.n);
-		} else if (!strcmp(actpblk.descr[i].name, PARAM_PRODUCER_MAX_PENDING_MESSAGES)) {
+		} else if (strcmp(actpblk.descr[i].name, PARAM_PRODUCER_MAX_PENDING_MESSAGES) == 0) {
 			pulsar_producer_configuration_set_max_pending_messages(conf, (int)pvals[i].val.d.n);
-		} else if (!strcmp(actpblk.descr[i].name, PARAM_PRODUCER_MAX_PENDING_MESSAGES_ACROSS_PARTITIONS)) {
+		} else if (strcmp(actpblk.descr[i].name, PARAM_PRODUCER_MAX_PENDING_MESSAGES_ACROSS_PARTITIONS) == 0) {
 			pulsar_producer_configuration_set_max_pending_messages_across_partitions(conf, (int)pvals[i].val.d.n);
-		} else if (!strcmp(actpblk.descr[i].name, PARAM_PRODUCER_PARTITIONS_ROUTING_MODE)) {
+		} else if (strcmp(actpblk.descr[i].name, PARAM_PRODUCER_PARTITIONS_ROUTING_MODE) == 0) {
 			pulsar_producer_configuration_set_partitions_routing_mode(conf,
 																	  (pulsar_partitions_routing_mode)pvals[i].val.d.n);
-		} else if (!strcmp(actpblk.descr[i].name, PARAM_PRODUCER_HASHING_SCHEME)) {
+		} else if (strcmp(actpblk.descr[i].name, PARAM_PRODUCER_HASHING_SCHEME) == 0) {
 			pulsar_producer_configuration_set_hashing_scheme(conf, (pulsar_hashing_scheme)pvals[i].val.d.n);
-		} else if (!strcmp(actpblk.descr[i].name, PARAM_PRODUCER_LAZY_START_PART_PRODUCERS)) {
+		} else if (strcmp(actpblk.descr[i].name, PARAM_PRODUCER_LAZY_START_PART_PRODUCERS) == 0) {
 			pulsar_producer_configuration_set_lazy_start_partitioned_producers(conf, (int)pvals[i].val.d.n);
-		} else if (!strcmp(actpblk.descr[i].name, PARAM_PRODUCER_BLOCK_FULL_QUEUE)) {
+		} else if (strcmp(actpblk.descr[i].name, PARAM_PRODUCER_BLOCK_FULL_QUEUE) == 0) {
 			pulsar_producer_configuration_set_block_if_queue_full(conf, (int)pvals[i].val.d.n);
-		} else if (!strcmp(actpblk.descr[i].name, PARAM_PRODUCER_BATCHING)) {
+		} else if (strcmp(actpblk.descr[i].name, PARAM_PRODUCER_BATCHING) == 0) {
 			pulsar_producer_configuration_set_batching_enabled(conf, (int)pvals[i].val.d.n);
-		} else if (!strcmp(actpblk.descr[i].name, PARAM_PRODUCER_BATCHING_MAX_MESSAGES)) {
+		} else if (strcmp(actpblk.descr[i].name, PARAM_PRODUCER_BATCHING_MAX_MESSAGES) == 0) {
 			pulsar_producer_configuration_set_batching_max_messages(conf, (unsigned int)pvals[i].val.d.n);
-		} else if (!strcmp(actpblk.descr[i].name, PARAM_PRODUCER_BATCHING_MAX_SIZE)) {
+		} else if (strcmp(actpblk.descr[i].name, PARAM_PRODUCER_BATCHING_MAX_SIZE) == 0) {
 			pulsar_producer_configuration_set_batching_max_allowed_size_in_bytes(conf, (unsigned long)pvals[i].val.d.n);
-		} else if (!strcmp(actpblk.descr[i].name, PARAM_PRODUCER_BATCHING_MAX_DELAY)) {
+		} else if (strcmp(actpblk.descr[i].name, PARAM_PRODUCER_BATCHING_MAX_DELAY) == 0) {
 			pulsar_producer_configuration_set_batching_max_publish_delay_ms(conf, (unsigned long)pvals[i].val.d.n);
-		} else if (!strcmp(actpblk.descr[i].name, PARAM_PRODUCER_CHUNKING)) {
+		} else if (strcmp(actpblk.descr[i].name, PARAM_PRODUCER_CHUNKING) == 0) {
 			pulsar_producer_configuration_set_chunking_enabled(conf, (int)pvals[i].val.d.n);
 		} else {
 			DBGPRINTF(
@@ -317,10 +321,13 @@ EXPORT_FUNC rsRetVal newActInst(uchar ATTR_UNUSED * modName,
 	if (p == NULL) {
 		pulsar_producer_t * producer;
 		pulsar_client_create_producer(loadModConf->client_, topic, conf, &producer);
+
+		pthread_mutex_lock(&loadModConf->prod_mutex_);
 		hashmap_set(loadModConf->producers_,
 					&(struct producer_tuple){.topic_ = topic, .producer_ = producer, .producer_config_ = conf});
+		pthread_mutex_unlock(&loadModConf->prod_mutex_);
+
 		instance_data->producer_ = producer;
-		instance_data->topic_ = topic;
 	} else {
 		pulsar_producer_configuration_free(conf);
 		conf = NULL;
@@ -329,13 +336,16 @@ EXPORT_FUNC rsRetVal newActInst(uchar ATTR_UNUSED * modName,
 		topic = NULL;
 
 		instance_data->producer_ = p->producer_;
-		instance_data->topic_ = p->topic_;
 	}
 
 	// TODO: validate required parameters and values
 
 	CHKiRet(OMSRconstruct(ppOMSR, 1));
-	CHKiRet(OMSRsetEntry(*ppOMSR, 0, (uchar *)strdup("RSYSLOG_FileFormat"), OMSR_NO_RQD_TPL_OPTS));
+	CHKiRet(OMSRsetEntry(
+		*ppOMSR,
+		0,
+		(uchar *)strdup(instance_data->template_ == NULL ? "RSYSLOG_StdJSONFmt" : instance_data->template_),
+		OMSR_NO_RQD_TPL_OPTS));
 
 finalize_it:
 	if (iRet == RS_RET_OK || iRet == RS_RET_SUSPENDED) {
@@ -378,6 +388,7 @@ EXPORT_FUNC rsRetVal beginCnfLoad(modConfData_t ** ptr, rsconf_t * rs_config)
 	}
 
 	module_config->pConf = rs_config;
+	pthread_mutex_init(&module_config->prod_mutex_, NULL);
 	module_config->producers_ = hashmap_new(
 		sizeof(struct producer_tuple), 0, 0, 0, producer_tuple_hash, producer_tuple_compare, producer_tuple_free, NULL);
 
@@ -417,33 +428,33 @@ EXPORT_FUNC rsRetVal setModCnf(struct nvlst * lst)
 		if (!pvals[i].bUsed)
 			continue;
 
-		if (!strcmp(modpblk.descr[i].name, PARAM_ENDPOINT)) {
+		if (strcmp(modpblk.descr[i].name, PARAM_ENDPOINT) == 0) {
 			loadModConf->endpoint_ = es_str2cstr(pvals[i].val.d.estr, NULL);
-		} else if (!strcmp(modpblk.descr[i].name, PARAM_CLIENT_MEMORY_LIMIT)) {
+		} else if (strcmp(modpblk.descr[i].name, PARAM_CLIENT_MEMORY_LIMIT) == 0) {
 			pulsar_client_configuration_set_memory_limit(loadModConf->client_config_, (uint64_t)pvals[i].val.d.n);
-		} else if (!strcmp(modpblk.descr[i].name, PARAM_CLIENT_OPERATION_TIMEOUT)) {
+		} else if (strcmp(modpblk.descr[i].name, PARAM_CLIENT_OPERATION_TIMEOUT) == 0) {
 			pulsar_client_configuration_set_operation_timeout_seconds(loadModConf->client_config_,
 																	  (int)pvals[i].val.d.n);
-		} else if (!strcmp(modpblk.descr[i].name, PARAM_CLIENT_IO_THREADS)) {
+		} else if (strcmp(modpblk.descr[i].name, PARAM_CLIENT_IO_THREADS) == 0) {
 			pulsar_client_configuration_set_io_threads(loadModConf->client_config_, (int)pvals[i].val.d.n);
-		} else if (!strcmp(modpblk.descr[i].name, PARAM_CLIENT_LISTENER_THREADS)) {
+		} else if (strcmp(modpblk.descr[i].name, PARAM_CLIENT_LISTENER_THREADS) == 0) {
 			pulsar_client_configuration_set_message_listener_threads(loadModConf->client_config_,
 																	 (int)pvals[i].val.d.n);
-		} else if (!strcmp(modpblk.descr[i].name, PARAM_CLIENT_LOOKUP_REQUESTS)) {
+		} else if (strcmp(modpblk.descr[i].name, PARAM_CLIENT_LOOKUP_REQUESTS) == 0) {
 			pulsar_client_configuration_set_concurrent_lookup_request(loadModConf->client_config_,
 																	  (int)pvals[i].val.d.n);
-		} else if (!strcmp(modpblk.descr[i].name, PARAM_CLIENT_USE_TLS)) {
+		} else if (strcmp(modpblk.descr[i].name, PARAM_CLIENT_USE_TLS) == 0) {
 			pulsar_client_configuration_set_use_tls(loadModConf->client_config_, (int)pvals[i].val.d.n);
-		} else if (!strcmp(modpblk.descr[i].name, PARAM_CLIENT_TLS_TRUST_CERT)) {
+		} else if (strcmp(modpblk.descr[i].name, PARAM_CLIENT_TLS_TRUST_CERT) == 0) {
 			char * cert_file = es_str2cstr(pvals[i].val.d.estr, NULL);  // todo pass pointer to the function below
 			pulsar_client_configuration_set_tls_trust_certs_file_path(loadModConf->client_config_, cert_file);
 			free(cert_file);
-		} else if (!strcmp(modpblk.descr[i].name, PARAM_CLIENT_TLS_ALLOW_INSECURE_CONN)) {
+		} else if (strcmp(modpblk.descr[i].name, PARAM_CLIENT_TLS_ALLOW_INSECURE_CONN) == 0) {
 			pulsar_client_configuration_set_tls_allow_insecure_connection(loadModConf->client_config_,
 																		  (int)pvals[i].val.d.n);
-		} else if (!strcmp(modpblk.descr[i].name, PARAM_CLIENT_VALIDATE_HOST_NAME)) {
+		} else if (strcmp(modpblk.descr[i].name, PARAM_CLIENT_VALIDATE_HOST_NAME) == 0) {
 			pulsar_client_configuration_set_validate_hostname(loadModConf->client_config_, (int)pvals[i].val.d.n);
-		} else if (!strcmp(modpblk.descr[i].name, PARAM_CLIENT_STATS_INTERVAL)) {
+		} else if (strcmp(modpblk.descr[i].name, PARAM_CLIENT_STATS_INTERVAL) == 0) {
 			pulsar_client_configuration_set_stats_interval_in_seconds(loadModConf->client_config_,
 																	  (unsigned int)pvals[i].val.d.n);
 		} else {
@@ -488,7 +499,11 @@ EXPORT_FUNC rsRetVal freeCnf(void * ptr)
 	free(mod->endpoint_);
 	pulsar_client_free(mod->client_);
 	pulsar_client_configuration_free(mod->client_config_);
+
+	pthread_mutex_lock(&mod->prod_mutex_);
 	hashmap_free(mod->producers_);
+	pthread_mutex_unlock(&mod->prod_mutex_);
+	pthread_mutex_destroy(&mod->prod_mutex_);
 
 	free(mod);
 
@@ -517,47 +532,47 @@ EXPORT_FUNC rsRetVal queryEtryPt(uchar * name, rsRetVal (**pEtryPoint)())
 	}
 	*pEtryPoint = NULL;
 
-	if (!strcmp((char *)name, "modExit")) {
+	if (strcmp((char *)name, "modExit") == 0) {
 		*pEtryPoint = modExit;
-	} else if (!strcmp((char *)name, "modGetID")) {
+	} else if (strcmp((char *)name, "modGetID") == 0) {
 		*pEtryPoint = modGetID;
-	} else if (!strcmp((char *)name, "getType")) {
+	} else if (strcmp((char *)name, "getType") == 0) {
 		*pEtryPoint = modGetType;
-	} else if (!strcmp((char *)name, "getKeepType")) {
+	} else if (strcmp((char *)name, "getKeepType") == 0) {
 		*pEtryPoint = modGetKeepType;
-	} else if (!strcmp((char *)name, "doAction")) {
+	} else if (strcmp((char *)name, "doAction") == 0) {
 		*pEtryPoint = doAction;
-	} else if (!strcmp((char *)name, "dbgPrintInstInfo")) {
+	} else if (strcmp((char *)name, "dbgPrintInstInfo") == 0) {
 		*pEtryPoint = dbgPrintInstInfo;
-	} else if (!strcmp((char *)name, "freeInstance")) {
+	} else if (strcmp((char *)name, "freeInstance") == 0) {
 		*pEtryPoint = freeInstance;
-	} else if (!strcmp((char *)name, "parseSelectorAct")) {
+	} else if (strcmp((char *)name, "parseSelectorAct") == 0) {
 		*pEtryPoint = parseSelectorAct;
-	} else if (!strcmp((char *)name, "isCompatibleWithFeature")) {
+	} else if (strcmp((char *)name, "isCompatibleWithFeature") == 0) {
 		*pEtryPoint = isCompatibleWithFeature;
-	} else if (!strcmp((char *)name, "tryResume")) {
+	} else if (strcmp((char *)name, "tryResume") == 0) {
 		*pEtryPoint = tryResume;
-	} else if (!strcmp((char *)name, "createWrkrInstance")) {
+	} else if (strcmp((char *)name, "createWrkrInstance") == 0) {
 		*pEtryPoint = createWrkrInstance;
-	} else if (!strcmp((char *)name, "freeWrkrInstance")) {
+	} else if (strcmp((char *)name, "freeWrkrInstance") == 0) {
 		*pEtryPoint = freeWrkrInstance;
-	} else if (!strcmp((char *)name, "newActInst")) {
+	} else if (strcmp((char *)name, "newActInst") == 0) {
 		*pEtryPoint = newActInst;
-	} else if (!strcmp((char *)name, "getModCnfName")) {
+	} else if (strcmp((char *)name, "getModCnfName") == 0) {
 		*pEtryPoint = modGetCnfName;
-	} else if (!strcmp((char *)name, "setModCnf")) {
+	} else if (strcmp((char *)name, "setModCnf") == 0) {
 		*pEtryPoint = setModCnf;
-	} else if (!strcmp((char *)name, "beginCnfLoad")) {
+	} else if (strcmp((char *)name, "beginCnfLoad") == 0) {
 		*pEtryPoint = beginCnfLoad;
-	} else if (!strcmp((char *)name, "endCnfLoad")) {
+	} else if (strcmp((char *)name, "endCnfLoad") == 0) {
 		*pEtryPoint = endCnfLoad;
-	} else if (!strcmp((char *)name, "checkCnf")) {
+	} else if (strcmp((char *)name, "checkCnf") == 0) {
 		*pEtryPoint = checkCnf;
-	} else if (!strcmp((char *)name, "activateCnf")) {
+	} else if (strcmp((char *)name, "activateCnf") == 0) {
 		*pEtryPoint = activateCnf;
-	} else if (!strcmp((char *)name, "freeCnf")) {
+	} else if (strcmp((char *)name, "freeCnf") == 0) {
 		*pEtryPoint = freeCnf;
-	} else if (!strcmp((char *)name, "doHUP")) {
+	} else if (strcmp((char *)name, "doHUP") == 0) {
 		*pEtryPoint = doHUP;
 	}
 
@@ -577,27 +592,24 @@ EXPORT_FUNC rsRetVal modInit(ATTR_UNUSED int iIFVersRequested,
 {
 	DEFiRet;
 
-	rsRetVal (*pObjGetObjInterface)(obj_if_t * pIf);
-	rsRetVal localRet;
-	rsRetVal (*pomsrGetSupportedTplOpts)(unsigned long * pOpts);
-	unsigned long opts;
-	int bArrayPassingSupported; /* does core support template passing as an array? */
-
 	assert(pHostQueryEtryPt != NULL);
+
+	rsRetVal (*pObjGetObjInterface)(obj_if_t * pIf);
 	iRet = pHostQueryEtryPt((uchar *)"objGetObjInterface", &pObjGetObjInterface);
 	if ((iRet != RS_RET_OK) || (pQueryEtryPt == NULL) || (ipIFVersProvided == NULL) || (pObjGetObjInterface == NULL)) {
 		return (iRet == RS_RET_OK) ? RS_RET_PARAM_ERROR : iRet;
 	}
-	/* now get the obj interface so that we can access other objects */
-	CHKiRet(pObjGetObjInterface(&obj));
 
-	initConfVars();
+	*pQueryEtryPt = queryEtryPt;
+
+	/* now get the obj interface so that we can access other objects */
+	iRet = pObjGetObjInterface(&obj);
+	if (iRet != RS_RET_OK)
+		return iRet;
+
 	*ipIFVersProvided = CURR_MOD_IF_VERSION; /* we only support the current interface specification */
 
-	CHKiRet(pHostQueryEtryPt((uchar *)"regCfSysLineHdlr", &omsdRegCFSLineHdlr));
-	/* check if the rsyslog core supports parameter passing code */
+	iRet = pHostQueryEtryPt((uchar *)"regCfSysLineHdlr", &omsdRegCFSLineHdlr);
 
-finalize_it:
-	*pQueryEtryPt = queryEtryPt;
 	RETiRet;
 }
